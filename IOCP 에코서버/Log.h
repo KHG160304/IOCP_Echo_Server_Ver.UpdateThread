@@ -83,12 +83,9 @@ do {																	\
 	}\
 } while (0)
 
-int __gLogLvl = dfLOG_LEVEL_SYSTEM;
-__declspec(thread) wchar_t __gLogBuffer[2048 + 1];
-const wchar_t* __strLogLvl[3] = { L"[DEBUG]", L"[ERROR]", L"[SYSTEM]" };
+extern int __gLogLvl;
+extern __declspec(thread) wchar_t __gLogBuffer[2048 + 1];
+extern const wchar_t* __strLogLvl[3];
 
-void Log(const wchar_t* strLog, int logLvl)
-{
-	wprintf_s(L"%s\n", strLog);
-}
+void Log(const wchar_t* strLog, int logLvl);
 #endif
