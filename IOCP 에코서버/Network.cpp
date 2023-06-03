@@ -97,7 +97,7 @@ void RequestExitNetworkLibThread(void)
 	ReleaseServerResource();
 
 	CloseHandle(hThreadAccept);
-	for (int i = 0; i < numberOfCreateIOCPWorkerThread; ++i)
+	for (DWORD i = 0; i < numberOfCreateIOCPWorkerThread; ++i)
 	{
 		CloseHandle(hThreadIOCPWorker[i]);
 	}
@@ -181,7 +181,7 @@ bool InitNetworkIOThread(void)
 		_Log(dfLOG_LEVEL_SYSTEM, "IOCP HANDLE CreateIoCompletionPort() error code: %d", GetLastError());
 		return false;
 	}
-	
+
 	if (gSystemInfo.dwNumberOfProcessors > 5)
 	{
 		numberOfCreateIOCPWorkerThread = numberOfConcurrentThread + 1;
@@ -304,23 +304,23 @@ void PostSend(Session* ptrSession)
 	_int64 distanceOfRearToFront;
 	//ULONG useSize;
 	//int secondDirectDequeueSize;
-	
+
 	/*************************************
 	** PostSend가 호출되는 2가지 경로
 	* 1. 수신 IO 처리시에 OnRecv 함수 안에서 SendPacket 호출한 경우, 호출될 수 있음
 	* 2. 송신 완료 처리후에 버퍼에 남은 데이터가 있다면 호출될 수 있음
-	* 
+	*
 	* 1번 경로로 PostSend 실행의 경우, 송신 완료 처리 스레드가 Interlock으로 잠금을 풀어주지 않으면,
 	*     수신 IO에서 PostSend 호출이 불가능하다. WSASend를 실행할 수 없다.
 	*     그래서 송신 완료 결과가 캐시에 반영아 안됬다가
-	*	  , PostSend 로직 실행중에 반영이 될지말지 여부로 고민할 필요없다. 
+	*	  , PostSend 로직 실행중에 반영이 될지말지 여부로 고민할 필요없다.
 		  Interlock API가 store buffer의 내용을 무조건 캐시에 반영 시키기 때문이다. 무조건 반영되어 있다.
 	* 2번 경로로 PostSend가 실행된 경우, 수신 완료 IO 처리 스레드에서, 송신 링버퍼에 인큐를 동시에 할 수 있는
 	*     상황이 발생한다.
 	*     PostSend 로직이 도는 순간에도 Dequeue 가능한 크기가 가변적으로 계속 증가할 수 있다는 것이다.
 	*     그로 인해 WSASend에 호출시 WSABUF 배열의 2번재 인자의 버퍼주소랑 길이를 잘못 넘겨주면
 	*     잘못된 데이터를 전송하게 되는 오류가 발생할 수 있다.
-	* 
+	*
 	*     그래서 Front랑 Rear 포인터 값을 가져와서 로직에서, Front와 Rear 사이의 거리를 직접 계산해서
 	*     WSABUF에 넘겨줄 값들을 특정하도록 하였다.
 	*     Front 포인터는 PostSend로직이 도는 중에 변경될 걱정이 없고
@@ -340,7 +340,7 @@ void PostSend(Session* ptrSession)
 		if (secondDirectDequeueSize > wsabuf[0].len)
 		{
 			wsabuf[0].len = ptrSendRingBuffer->GetDirectDequeueSize();
-		} 
+		}
 		else if (wsabuf[0].len == secondDirectDequeueSize)
 		{
 			wsabuf[1].buf = ptrSendRingBuffer->GetInternalBufferPtr();
@@ -474,7 +474,7 @@ unsigned WINAPI IOCPWorkerThread(LPVOID args)
 			goto FIN_COMPLETION_IO_PROCESS;
 		}
 		/*
-		
+
 			SendRingBuffer의 경우
 			수신 IO를 처리하는 스레드와
 			송신 IO를 처리하는 스레드가 동시에 접근이 가능하다.
@@ -482,7 +482,7 @@ unsigned WINAPI IOCPWorkerThread(LPVOID args)
 			수신 IO 스레드가
 			OnRecv 함수에서 SendPacket 함수를 호출하여
 			SendRingBuffer에 Enqueue할때 버퍼에 공간이 부족하면
-			데이터가 안들어간다. 
+			데이터가 안들어간다.
 			그리고 송신 완료 IO 스레드가 돌면서, 송신한 만큼
 			링버퍼 크기를 줄이면서, 송신 링버퍼에 들어있는 값 메모리 크기가 0이 될 수 있다.
 			그러면
@@ -493,7 +493,7 @@ unsigned WINAPI IOCPWorkerThread(LPVOID args)
 		if ((&(ptrSession->recvOverlapped) == overlapped))
 		{
 			/*
-				여기서 0 을 체크하는 이유는 
+				여기서 0 을 체크하는 이유는
 				송신 완료 IO작업인 경우는 waitSend 플래그 값을 false로 바꿔줘야 해서
 				송신 완료 IO는 numberOfBytesTransferred 값이 0이어도 정상적으로 로직을 타야하고
 				수신 완료 IO의 경우에만 numberOfBytesTransferred 값이 0이 아니여야만 로직을 타도록 해야해서
@@ -523,7 +523,7 @@ unsigned WINAPI IOCPWorkerThread(LPVOID args)
 				ptrRecvRingBuffer->MoveFront(sizeof(recvPacketHeader));
 				ptrRecvRingBuffer->Dequeue(recvPacket.GetRearBufferPtr(), recvPacketHeader);
 				recvPacket.MoveRear(recvPacketHeader);
-					
+
 				OnRecv(sessionID, recvPacket);
 			}
 			PostRecv(ptrSession);
@@ -540,7 +540,7 @@ unsigned WINAPI IOCPWorkerThread(LPVOID args)
 			}
 		}
 
-		FIN_COMPLETION_IO_PROCESS:
+	FIN_COMPLETION_IO_PROCESS:
 		if (InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt) == 0)
 		{
 			//세션 삭제
