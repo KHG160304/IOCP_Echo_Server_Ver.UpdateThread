@@ -281,7 +281,11 @@ void PostRecv(Session* ptrSession)
 		, (LPWSAOVERLAPPED)&ptrSession->recvOverlapped, nullptr) == SOCKET_ERROR
 		&& (wsaRecvErrorCode = WSAGetLastError()) != WSA_IO_PENDING)
 	{
-		_Log(dfLOG_LEVEL_SYSTEM, "WSARecv error code: %d", wsaRecvErrorCode);
+		if (wsaRecvErrorCode != 10054 && wsaRecvErrorCode != 10038)
+		{
+			_Log(dfLOG_LEVEL_SYSTEM, "WSARecv error code: %d", wsaRecvErrorCode);
+		}
+
 		if (InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt) == 0)
 		{
 			ReleaseSession(ptrSession);
@@ -379,7 +383,11 @@ void PostSend(Session* ptrSession)
 		, (LPWSAOVERLAPPED)&ptrSession->sendOverlapped, nullptr) == SOCKET_ERROR
 		&& (wsaSendErrorCode = WSAGetLastError()) != WSA_IO_PENDING)
 	{
-		_Log(dfLOG_LEVEL_SYSTEM, "WSASend error code: %d", wsaSendErrorCode);
+		if (wsaSendErrorCode != 10054 && wsaSendErrorCode != 10038)
+		{
+			_Log(dfLOG_LEVEL_SYSTEM, "WSASend error code: %d", wsaSendErrorCode);
+		}
+
 		InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt);
 	}
 }
