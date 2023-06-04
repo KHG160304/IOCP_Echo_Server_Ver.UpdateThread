@@ -31,13 +31,13 @@ struct Session
 	int waitSend;
 
 	Session(SOCKET sock, SOCKADDR_IN* addr, SESSIONID id)
-	: socket(sock)
-	, clientAddr(*addr)
-	, sessionID(id)
-	, sendRingBuffer(1048576)
-	, recvRingBuffer(1048576)
-	, overlappedIOCnt(0)
-	, waitSend(false)
+		: socket(sock)
+		, clientAddr(*addr)
+		, sessionID(id)
+		, sendRingBuffer(1048576)
+		, recvRingBuffer(1048576)
+		, overlappedIOCnt(0)
+		, waitSend(false)
 	{
 		sendOverlapped.ptrSession = this;
 		recvOverlapped.ptrSession = this;
@@ -54,6 +54,7 @@ HANDLE hIOCP;
 HANDLE hThreadAccept;
 HANDLE* hThreadIOCPWorker;
 std::unordered_map<SESSIONID, Session*> sessionMap;
+size_t acceptTotalCnt = 0;
 SRWLOCK	srwlock = RTL_SRWLOCK_INIT;
 static void (*OnRecv)(SESSIONID sessionID, SerializationBuffer& packet) = nullptr;
 
@@ -71,6 +72,15 @@ void ReleaseServerResource()
 	}
 	sessionMap.clear();
 	_Log(dfLOG_LEVEL_SYSTEM, "서버 리소스 해제 완료");
+}
+
+size_t GetAcceptTotalCnt()
+{
+	return acceptTotalCnt;
+}
+size_t GetCurrentSessionCnt()
+{
+	return sessionMap.size();
 }
 
 void RequestExitNetworkLibThread(void)
@@ -454,8 +464,8 @@ unsigned WINAPI AcceptThread(LPVOID args)
 			closesocket(clientSock);
 			continue;
 		}
-
 		PostRecv(CreateSession(clientSock, &clientAddr));
+		++acceptTotalCnt;
 	}
 }
 
