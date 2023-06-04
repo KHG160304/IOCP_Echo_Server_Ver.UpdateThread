@@ -394,13 +394,19 @@ void PostSend(Session* ptrSession)
 
 void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 {
+	std::unordered_map<SESSIONID, Session*>::iterator iter;
 	Session* ptrSession;
 	RingBuffer* ptrSendRingBuffer;
 	WORD sendPacketHeader;
 
 	AcquireSRWLockShared(&srwlock);
-	ptrSession = sessionMap.at(sessionID);
-	ReleaseSRWLockShared(&srwlock);
+	//ptrSession = sessionMap.at(sessionID);
+	if ((iter = sessionMap.find(sessionID)) == sessionMap.end())
+	{
+		ReleaseSRWLockShared(&srwlock);
+		return;
+	}
+	ptrSession = iter->second;
 
 	if ((sendPacketHeader = sendPacket.GetUseSize()) == 0)
 	{
@@ -421,6 +427,7 @@ void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 	ptrSendRingBuffer->Enqueue(sendPacket.GetFrontBufferPtr(), sendPacketHeader);
 	sendPacket.MoveFront(sendPacketHeader);
 	PostSend(ptrSession);
+	ReleaseSRWLockShared(&srwlock);
 }
 
 unsigned WINAPI AcceptThread(LPVOID args)
