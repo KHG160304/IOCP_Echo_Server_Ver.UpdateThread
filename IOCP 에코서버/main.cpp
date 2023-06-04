@@ -4,7 +4,7 @@
 
 #define SERVERPORT	6000
 
-int shutdown = false;
+int shutdownServer = false;
 
 void OnRecv(SESSIONID sessionID, SerializationBuffer& packet)
 {
@@ -24,7 +24,7 @@ int main(void)
 		return 0;
 	}
 
-	while (!shutdown)
+	while (!shutdownServer)
 	{
 		if (_kbhit())
 		{
@@ -32,7 +32,7 @@ int main(void)
 			if (key == 'Q' || key == 'q')
 			{
 				RequestExitNetworkLibThread();
-				shutdown = true;
+				shutdownServer = true;
 			}
 		}
 	}
