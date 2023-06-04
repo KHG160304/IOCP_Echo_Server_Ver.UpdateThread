@@ -1,26 +1,78 @@
-﻿#include "Network.h"
+﻿#include <windows.h>
 #include <stdio.h>
 #include <conio.h>
+#include <synchapi.h>
+#include <process.h>
+#include "Network.h"
+#include "RingBuffer.h"
+#include "Log.h"
 
 #define SERVERPORT	6000
 
 int shutdownServer = false;
+RingBuffer updateThreadQueue(1048576);
+HANDLE hEventExitUpdateThread;
+HANDLE hEventWakeUpdateThread;
+HANDLE hThreadUpdate;
+SRWLOCK updateThreadQueueLock = SRWLOCK_INIT;
+
+unsigned WINAPI UpdateThread(LPVOID args);
+
+struct EchoMessage
+{
+	SESSIONID sessionID;
+	SerializationBuffer* ptrPayload;
+};
 
 void OnRecv(SESSIONID sessionID, SerializationBuffer& packet)
 {
-	SerializationBuffer sendPacket(8);
-	_int64 echoBody;
-	packet >> echoBody;
-	sendPacket << echoBody;
-	SendPacket(sessionID, sendPacket);
+	//SerializationBuffer sendPacket(8);
+	//_int64 echoBody;
+	//packet >> echoBody;
+	//sendPacket << echoBody;
+	//SendPacket(sessionID, sendPacket);
+	EchoMessage message;
+	message.sessionID = sessionID;
+	message.ptrPayload = new SerializationBuffer(packet.GetUseSize());
+	message.ptrPayload->Enqueue(packet.GetFrontBufferPtr(), packet.GetUseSize());
+	AcquireSRWLockExclusive(&updateThreadQueueLock);
+	updateThreadQueue.Enqueue((char*)&message, sizeof(EchoMessage));
+	ReleaseSRWLockExclusive(&updateThreadQueueLock);
+	SetEvent(hEventWakeUpdateThread);
 }
 
 int main(void)
 {
 	int key;
+
+	hEventExitUpdateThread = CreateEvent(NULL, FALSE, FALSE, NULL);
+	if (hEventExitUpdateThread == nullptr)
+	{
+		_Log(dfLOG_LEVEL_SYSTEM, "Create Event Error %d", GetLastError());
+		return 0;
+	}
+	hEventWakeUpdateThread = CreateEvent(NULL, FALSE, FALSE, NULL);
+	if (hEventWakeUpdateThread == nullptr)
+	{
+		_Log(dfLOG_LEVEL_SYSTEM, "Create Event Error %d", GetLastError());
+		return 0;
+	}
+
+	hThreadUpdate = (HANDLE)_beginthreadex(nullptr, 0, UpdateThread, nullptr, false, nullptr);
+	if (hThreadUpdate == nullptr)
+	{
+		_Log(dfLOG_LEVEL_SYSTEM, "Update Thread Create Error code %d", GetLastError());
+		CloseHandle(hEventExitUpdateThread);
+		CloseHandle(hEventWakeUpdateThread);
+		return 0;
+	}
+
 	SetOnRecvEvent(OnRecv);
 	if (!InitNetworkLib(SERVERPORT))
 	{
+		SetEvent(hEventExitUpdateThread);
+		CloseHandle(hEventExitUpdateThread);
+		CloseHandle(hEventWakeUpdateThread);
 		return 0;
 	}
 
@@ -37,9 +89,55 @@ int main(void)
 		}
 	}
 
+	SetEvent(hEventExitUpdateThread);
+	if (WaitForSingleObject(hThreadUpdate, INFINITE) == WAIT_FAILED)
+	{
+		_Log(dfLOG_LEVEL_SYSTEM, "hThreadUpdate - WaitForSingleObject error code: %d", GetLastError());
+	}
+
+	CloseHandle(hThreadUpdate);
+	CloseHandle(hEventExitUpdateThread);
+	CloseHandle(hEventWakeUpdateThread);
+
 	printf("메인 스레드 종료 완료\n");
 	return 0;
 }
 
+
+unsigned WINAPI UpdateThread(LPVOID args)
+{
+	int useSize;
+	EchoMessage message;
+	DWORD result;
+	HANDLE arrEvent[2] = { hEventWakeUpdateThread, hEventExitUpdateThread };
+	_Log(dfLOG_LEVEL_SYSTEM, "Start UpdateThread");
+	for (;;)
+	{
+		if (!(useSize = updateThreadQueue.GetUseSize()))
+		{
+			result = WaitForMultipleObjects(2, arrEvent, FALSE, INFINITE);
+			if (result == WAIT_FAILED)
+			{
+				_Log(dfLOG_LEVEL_SYSTEM, "Event WAIT_FAILED error code: %d", GetLastError());
+				_Log(dfLOG_LEVEL_SYSTEM, "Exit UpdateThread");
+				return -1;
+			}
+			else if (result == (WAIT_OBJECT_0 + 1))
+			{
+				_Log(dfLOG_LEVEL_SYSTEM, "Exit UpdateThread");
+				return 0;
+			}
+			useSize = updateThreadQueue.GetUseSize();
+		}
+
+		while (useSize)
+		{
+			updateThreadQueue.Dequeue((char*)&message, sizeof(message));
+			SendPacket(message.sessionID, *(message.ptrPayload));
+			delete message.ptrPayload;
+			useSize -= sizeof(EchoMessage);
+		}
+	}
+}
 
 
