@@ -8,6 +8,8 @@
 #include "Log.h"
 
 #define SERVERPORT	6000
+#define IOCP_WORKER_THREAD_CREATE_CNT	0
+#define IOCP_WORKER_THREAD_RUNNING_CNT	0
 
 int shutdownServer = false;
 RingBuffer updateThreadQueue(1048576);
@@ -68,7 +70,7 @@ int main(void)
 	}
 
 	SetOnRecvEvent(OnRecv);
-	if (!InitNetworkLib(SERVERPORT))
+	if (!InitNetworkLib(SERVERPORT, IOCP_WORKER_THREAD_CREATE_CNT, IOCP_WORKER_THREAD_RUNNING_CNT))
 	{
 		SetEvent(hEventExitUpdateThread);
 		CloseHandle(hEventExitUpdateThread);
@@ -139,5 +141,3 @@ unsigned WINAPI UpdateThread(LPVOID args)
 		}
 	}
 }
-
-
