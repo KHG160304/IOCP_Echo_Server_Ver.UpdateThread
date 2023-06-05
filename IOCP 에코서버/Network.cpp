@@ -422,6 +422,7 @@ void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 	{
 		_Log(dfLOG_LEVEL_SYSTEM, "송신패킷 SendRingBuffer Enqueue 실패 크기: %d"
 			, (int)(sizeof(sendPacketHeader) + sendPacketHeader));
+		ReleaseSRWLockShared(&srwlock);
 		return;
 	}
 
@@ -430,6 +431,7 @@ void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 	{
 		_Log(dfLOG_LEVEL_SYSTEM, "송신패킷 SendRingBuffer Enqueue 실패 크기: %d"
 			, (int)(sizeof(sendPacketHeader) + sendPacketHeader));
+		ReleaseSRWLockShared(&srwlock);
 		return;
 	}
 
