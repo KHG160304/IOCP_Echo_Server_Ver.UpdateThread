@@ -5,6 +5,7 @@
 #define WINAPI	__stdcall
 
 typedef unsigned short		WORD;
+typedef unsigned long		DWORD;
 typedef	void*				LPVOID;
 typedef unsigned long long	SESSIONID;
 
@@ -15,9 +16,6 @@ size_t GetAcceptTotalCnt();
 size_t GetCurrentSessionCnt();
 
 void RequestExitNetworkLibThread(void);
-bool InitNetworkLib(WORD port);
-bool InitNetworkIOThread(void);
-unsigned int WINAPI AcceptThread(LPVOID args);
-unsigned int WINAPI	IOCPWorkerThread(LPVOID args);
+bool InitNetworkLib(WORD port, DWORD createIOCPWorkerThreadCnt = 0, DWORD runningIOCPWorkerThreadCnt = 0);
 
 #endif // !__NETWORK_H__

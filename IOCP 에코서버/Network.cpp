@@ -58,6 +58,10 @@ size_t acceptTotalCnt = 0;
 SRWLOCK	srwlock = RTL_SRWLOCK_INIT;
 static void (*OnRecv)(SESSIONID sessionID, SerializationBuffer& packet) = nullptr;
 
+bool InitNetworkIOThread(DWORD createIOCPWorkerThreadCnt, DWORD runningIOCPWorkerThreadCnt);
+unsigned int WINAPI AcceptThread(LPVOID args);
+unsigned int WINAPI	IOCPWorkerThread(LPVOID args);
+
 void ReleaseServerResource()
 {
 	_Log(dfLOG_LEVEL_SYSTEM, "서버 리소스 해제 시작");
@@ -117,7 +121,7 @@ void RequestExitNetworkLibThread(void)
 	_Log(dfLOG_LEVEL_SYSTEM, "서버 종료 처리 완료");
 }
 
-bool InitNetworkLib(WORD port)
+bool InitNetworkLib(WORD port, DWORD createIOCPWorkerThreadCnt, DWORD runningIOCPWorkerThreadCnt)
 {
 	if (OnRecv == nullptr)
 	{
@@ -165,7 +169,7 @@ bool InitNetworkLib(WORD port)
 		goto InitError;
 	}
 
-	if (InitNetworkIOThread() == false)
+	if (InitNetworkIOThread(createIOCPWorkerThreadCnt, runningIOCPWorkerThreadCnt) == false)
 	{
 		goto InitError;
 	}
@@ -180,11 +184,19 @@ InitError:
 	return false;
 }
 
-bool InitNetworkIOThread(void)
+bool InitNetworkIOThread(DWORD createIOCPWorkerThreadCnt, DWORD runningIOCPWorkerThreadCnt)
 {
 	_int64 idx;
-	GetSystemInfo(&gSystemInfo);
-	numberOfConcurrentThread = (gSystemInfo.dwNumberOfProcessors / 2);
+	if (createIOCPWorkerThreadCnt != 0 && runningIOCPWorkerThreadCnt != 0)
+	{
+		numberOfConcurrentThread = runningIOCPWorkerThreadCnt;
+	}
+	else
+	{
+		GetSystemInfo(&gSystemInfo);
+		numberOfConcurrentThread = (gSystemInfo.dwNumberOfProcessors / 2);
+	}
+	
 	hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, numberOfConcurrentThread);
 	if (hIOCP == nullptr)
 	{
@@ -192,7 +204,11 @@ bool InitNetworkIOThread(void)
 		return false;
 	}
 
-	if (gSystemInfo.dwNumberOfProcessors > 5)
+	if (createIOCPWorkerThreadCnt != 0 && runningIOCPWorkerThreadCnt != 0)
+	{
+		numberOfCreateIOCPWorkerThread = createIOCPWorkerThreadCnt;
+	}
+	else if (gSystemInfo.dwNumberOfProcessors > 5)
 	{
 		numberOfCreateIOCPWorkerThread = numberOfConcurrentThread + 1;
 	}
@@ -388,7 +404,11 @@ void PostSend(Session* ptrSession)
 	}
 
 	ZeroMemory(&ptrSession->sendOverlapped, sizeof(WSAOVERLAPPED));
-	InterlockedIncrement((LONG*)&ptrSession->overlappedIOCnt);
+	if (InterlockedIncrement((LONG*)&ptrSession->overlappedIOCnt) == 1)
+	{
+		InterlockedExchange((LONG*)&ptrSession->overlappedIOCnt, 0);
+		return;
+	}
 	if (WSASend(ptrSession->socket, wsabuf, wsabufCnt, nullptr, 0
 		, (LPWSAOVERLAPPED)&ptrSession->sendOverlapped, nullptr) == SOCKET_ERROR
 		&& (wsaSendErrorCode = WSAGetLastError()) != WSA_IO_PENDING)
