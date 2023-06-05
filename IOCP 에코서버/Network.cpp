@@ -419,6 +419,7 @@ void PostSend(Session* ptrSession)
 		}
 
 		InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt);
+		// 여기서 세션을 삭제하는 코드를 넣지 않아서 ,힙이 계속 해제가 되지 않는 문제가 발생
 	}
 }
 
