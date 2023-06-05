@@ -27,6 +27,7 @@ struct Session
 	WsaOverlappedEX recvOverlapped;
 	RingBuffer sendRingBuffer;
 	RingBuffer recvRingBuffer;
+	SRWLOCK	sessionSRWLock;
 	int overlappedIOCnt;
 	int waitSend;
 
@@ -36,6 +37,7 @@ struct Session
 		, sessionID(id)
 		, sendRingBuffer(1048576)
 		, recvRingBuffer(1048576)
+		, sessionSRWLock(SRWLOCK_INIT)
 		, overlappedIOCnt(0)
 		, waitSend(false)
 	{
@@ -55,7 +57,7 @@ HANDLE hThreadAccept;
 HANDLE* hThreadIOCPWorker;
 std::unordered_map<SESSIONID, Session*> sessionMap;
 size_t acceptTotalCnt = 0;
-SRWLOCK	srwlock = RTL_SRWLOCK_INIT;
+SRWLOCK	sessionMapSRWLock = RTL_SRWLOCK_INIT;
 static void (*OnRecv)(SESSIONID sessionID, SerializationBuffer& packet) = nullptr;
 
 bool InitNetworkIOThread(DWORD createIOCPWorkerThreadCnt, DWORD runningIOCPWorkerThreadCnt);
@@ -260,9 +262,9 @@ Session* CreateSession(SOCKET clientSock, SOCKADDR_IN* clientAddr)
 {
 	CreateIoCompletionPort((HANDLE)clientSock, hIOCP, gSessionID, 0);
 	Session* ptrNewSession = new Session(clientSock, clientAddr, gSessionID);
-	AcquireSRWLockExclusive(&srwlock);
+	AcquireSRWLockExclusive(&sessionMapSRWLock);
 	sessionMap.insert({ gSessionID, ptrNewSession });
-	ReleaseSRWLockExclusive(&srwlock);
+	ReleaseSRWLockExclusive(&sessionMapSRWLock);
 	gSessionID += 1;
 	return ptrNewSession;
 }
@@ -271,9 +273,19 @@ void ReleaseSession(Session* ptrSession)
 {
 	//세션 삭제
 	closesocket(ptrSession->socket);
-	AcquireSRWLockExclusive(&srwlock);
+	AcquireSRWLockExclusive(&sessionMapSRWLock);
 	sessionMap.erase(ptrSession->sessionID);
-	ReleaseSRWLockExclusive(&srwlock);
+	AcquireSRWLockExclusive(&ptrSession->sessionSRWLock);
+	ReleaseSRWLockExclusive(&sessionMapSRWLock);
+	ReleaseSRWLockExclusive(&ptrSession->sessionSRWLock);
+	delete ptrSession;
+}
+
+void ReleaseSessionForSendPacket(Session* ptrSession)
+{
+	//세션 삭제
+	closesocket(ptrSession->socket);
+	sessionMap.erase(ptrSession->sessionID);
 	delete ptrSession;
 }
 
@@ -418,8 +430,91 @@ void PostSend(Session* ptrSession)
 			_Log(dfLOG_LEVEL_SYSTEM, "WSASend error code: %d", wsaSendErrorCode);
 		}
 
-		InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt);
 		// 여기서 세션을 삭제하는 코드를 넣지 않아서 ,힙이 계속 해제가 되지 않는 문제가 발생
+		if(InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt) == 0)
+		{
+			ReleaseSession(ptrSession);
+		}
+	}
+}
+
+void PostSendForSendPacket(Session* ptrSession)
+{
+	if (InterlockedExchange((LONG*)&ptrSession->waitSend, true))
+	{
+		return;
+	}
+	// 이 함수의 경우, Update스레드 외부 스레드에서 호출되는 함수이다.
+	// 보통 IOCP 워커스레드는 완료통지를 받은 다음 필요한 경우, WSARecv를 다시 호출하거나, WSASend를 걸거나 하는 작업을
+	// 먼저 진행하여, IOCount를 증가시키고나서, 완료통지 받은 작업에 대해서 IOCount를 감소시키기 때문에
+	// Update 스레드 없이, IOCP 스레드만 존재하는 경우에는 무조건 IOCP워커 스레드의 최하단에서 세션이 릴리즈된다.
+	// IOCount를 건드리는 스레드는 IOCP워커스레드 뿐이었다.
+	// 그런데, Update 스레드에서도 IOCount를 수정하게 되면서, 
+	// IOCP 워커 스레드에 락이 없는 경우, IOCP 워커 스레드에서 IOCount가 0이 되어서 릴리즈 절차에 들어갔는데,
+	// Update 스레드 쪽에서 IOCount를 올리고, WSASend 호출했는데 실패해서, 자기가 다시 IOCount를 0으로 바꾸고
+	// 릴리즈 절차에 돌입해서, 릴리즈가 중복으로 두번 발새하게 되어 문제가 되거나,
+	// Update 스레드 쪽에서 IOCount를 올리고, WSASend 호출했는데 성공해서, 이후에, 완료통지가 온 경우에는
+	// 해당 세션은 이미 릴리즈되었기 때문에 굉장히 문제가 되는 상황이 된다.
+	// 이 상황을 막기위해서는, IOCP워커스레드 쪽에서 릴리즈 절차에 돌입했을때는, Update 스레드 쪽에서
+	// PostSend가 호출되지 않도록 락을 잘 걸거나,
+	// 아니면 아래 코드 처럼, 0에서 1로 바뀌는 순간인지를 체크해서 그냥 리턴해 버리도록 하는 것이다.
+	if (InterlockedIncrement((LONG*)&ptrSession->overlappedIOCnt) == 1)
+	{
+		InterlockedExchange((LONG*)&ptrSession->overlappedIOCnt, 0);
+		return;
+	}
+
+	RingBuffer* ptrSendRingBuffer = &ptrSession->sendRingBuffer;
+	WSABUF wsabuf[2];
+	int wsabufCnt;
+	int wsaSendErrorCode;
+	char* ptrRear;
+	_int64 distanceOfRearToFront;
+
+	wsabuf[0].buf = ptrSendRingBuffer->GetFrontBufferPtr();
+
+	ptrRear = ptrSendRingBuffer->GetRearBufferPtr();
+	distanceOfRearToFront = (ptrRear - wsabuf[0].buf);
+
+	if (distanceOfRearToFront > 0)
+	{
+		wsabuf[0].len = ptrSendRingBuffer->GetDirectDequeueSize();
+		wsabufCnt = 1;
+	}
+	else if (distanceOfRearToFront < 0)
+	{
+		wsabuf[0].len = ptrSendRingBuffer->GetDirectDequeueSize();
+
+		wsabuf[1].buf = ptrSendRingBuffer->GetInternalBufferPtr();
+		wsabuf[1].len = (ULONG)(ptrSendRingBuffer->GetRearBufferPtr() - wsabuf[1].buf);
+		wsabufCnt = 2;
+	}
+	else
+	{
+		InterlockedExchange((LONG*)&ptrSession->waitSend, false);
+		return;
+	}
+
+	ZeroMemory(&ptrSession->sendOverlapped, sizeof(WSAOVERLAPPED));
+	if (WSASend(ptrSession->socket, wsabuf, wsabufCnt, nullptr, 0
+		, (LPWSAOVERLAPPED)&ptrSession->sendOverlapped, nullptr) == SOCKET_ERROR
+		&& (wsaSendErrorCode = WSAGetLastError()) != WSA_IO_PENDING)
+	{
+		if (wsaSendErrorCode != 10054 && wsaSendErrorCode != 10038)
+		{
+			_Log(dfLOG_LEVEL_SYSTEM, "WSASend error code: %d", wsaSendErrorCode);
+		}
+
+		// 여기서 세션을 삭제하는 코드를 넣지 않아서 ,힙이 계속 해제가 되지 않는 문제가 발생
+		if (InterlockedDecrement((LONG*)&ptrSession->overlappedIOCnt) == 0)
+		{
+			// 이 코드는
+			// 이미 세션에 대해서 락을 걸고 릴리즈에 진입하는 상황이기 때문에
+			// ReleaseSessionForSendPacket 내부에는 어떠한 락도 존재하지 않는 상황이다.
+			// 이 코드에서 릴리즈하게 되었다는 것은, IOCP 워커스레드 쪽은, 해당 세션에 대해서 모든
+			// 완료통지 처리를 마치고도, IOCount가 0이 되지 않았다는 상황이 발생했다는 것이다.
+			ReleaseSessionForSendPacket(ptrSession);
+		}
 	}
 }
 
@@ -430,20 +525,21 @@ void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 	RingBuffer* ptrSendRingBuffer;
 	WORD sendPacketHeader;
 
-	AcquireSRWLockShared(&srwlock);
-	//ptrSession = sessionMap.at(sessionID);
+	AcquireSRWLockExclusive(&sessionMapSRWLock);
 	if ((iter = sessionMap.find(sessionID)) == sessionMap.end())
 	{
-		ReleaseSRWLockShared(&srwlock);
+		ReleaseSRWLockExclusive(&sessionMapSRWLock);
 		return;
 	}
 	ptrSession = iter->second;
+	AcquireSRWLockExclusive(&ptrSession->sessionSRWLock);
+	ReleaseSRWLockExclusive(&sessionMapSRWLock);
 
 	if ((sendPacketHeader = sendPacket.GetUseSize()) == 0)
 	{
 		_Log(dfLOG_LEVEL_SYSTEM, "송신패킷 SendRingBuffer Enqueue 실패 크기: %d"
 			, (int)(sizeof(sendPacketHeader) + sendPacketHeader));
-		ReleaseSRWLockShared(&srwlock);
+		ReleaseSRWLockExclusive(&ptrSession->sessionSRWLock);
 		return;
 	}
 
@@ -452,15 +548,15 @@ void SendPacket(SESSIONID sessionID, SerializationBuffer& sendPacket)
 	{
 		_Log(dfLOG_LEVEL_SYSTEM, "송신패킷 SendRingBuffer Enqueue 실패 크기: %d"
 			, (int)(sizeof(sendPacketHeader) + sendPacketHeader));
-		ReleaseSRWLockShared(&srwlock);
+		ReleaseSRWLockExclusive(&ptrSession->sessionSRWLock);
 		return;
 	}
 
 	ptrSendRingBuffer->Enqueue((char*)&sendPacketHeader, sizeof(sendPacketHeader));
 	ptrSendRingBuffer->Enqueue(sendPacket.GetFrontBufferPtr(), sendPacketHeader);
 	sendPacket.MoveFront(sendPacketHeader);
-	PostSend(ptrSession);
-	ReleaseSRWLockShared(&srwlock);
+	PostSendForSendPacket(ptrSession);
+	ReleaseSRWLockExclusive(&ptrSession->sessionSRWLock);
 }
 
 unsigned WINAPI AcceptThread(LPVOID args)
